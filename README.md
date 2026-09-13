@@ -48,8 +48,6 @@ editing the security realm, is still WLST or Remote Console work.
 ## Quick start
 
 ```bash
-git clone https://github.com/yusufkocak1/weblogic-console.git
-cd weblogic-console
 npm install
 npm run serve
 ```
