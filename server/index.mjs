@@ -24,6 +24,16 @@ import { createReadStream, mkdirSync, readFileSync, renameSync, writeFileSync } 
 import { appendFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import {
+  SCOPE_PAYLOAD,
+  assignAliases,
+  assignLabels,
+  buildScope,
+  combineResults,
+  rewriteBody,
+  routeByBody,
+  routeRequest,
+} from './group.mjs'
 
 const PORT = Number(process.env.WLC_PORT || 7101)
 // Bound to loopback on purpose: this process can reach an AdminServer with
@@ -113,7 +123,7 @@ let profiles = loadProfiles()
 function loadProfiles() {
   try {
     const raw = JSON.parse(readFileSync(PROFILES_FILE, 'utf8'))
-    return Array.isArray(raw) ? raw.filter((p) => p?.id && p?.host) : []
+    return Array.isArray(raw) ? raw.filter((p) => p?.id && (p?.host || p?.members?.length)) : []
   } catch {
     // Missing or unreadable file simply means "no profiles yet".
     return []
@@ -132,7 +142,34 @@ function saveProfiles() {
   }
 }
 
-const profileKey = (p) => `${p.ssl ? 'https' : 'http'}://${p.username}@${p.host}:${p.port}`
+const memberKey = (m) => `${m.ssl ? 'https' : 'http'}://${m.host}:${m.port}/${m.cluster}`
+
+/**
+ * A group is the same group whatever it is called: the key is its user and the
+ * clusters it covers, so renaming one never makes the next login save a copy.
+ */
+const profileKey = (p) =>
+  p.kind === 'group'
+    ? `group:${p.username}:${p.members.map(memberKey).sort().join(',')}`
+    : `${p.ssl ? 'https' : 'http'}://${p.username}@${p.host}:${p.port}`
+
+function upsertGroupProfile({ name, username, members }) {
+  const saved = members.map(({ host, port, ssl, insecure, cluster }) => ({ host, port, ssl, insecure, cluster }))
+  const key = profileKey({ kind: 'group', username, members: saved })
+  const existing = profiles.find((p) => profileKey(p) === key)
+  const profile = existing || { id: randomUUID() }
+  Object.assign(profile, {
+    kind: 'group',
+    name: name?.trim() || existing?.name || saved.map((m) => m.cluster).join(' + '),
+    username,
+    members: saved,
+    lastUsedAt: Date.now(),
+  })
+  if (!existing) profiles.push(profile)
+  profiles.sort((a, b) => (b.lastUsedAt || 0) - (a.lastUsedAt || 0))
+  saveProfiles()
+  return profile
+}
 
 function upsertProfile({ name, host, port, ssl, insecure, username }) {
   const key = profileKey({ host, port, ssl, username })
@@ -239,6 +276,21 @@ function publicConnection(connection, activeId) {
     permissions: connection.permissions || { configure: true, known: false },
     connectedAt: connection.connectedAt,
     active: connection.id === activeId,
+    kind: connection.kind || 'single',
+    ...(connection.kind === 'group'
+      ? {
+          members: connection.members.map((member) => ({
+            label: member.label,
+            host: member.host,
+            port: member.port,
+            ssl: member.ssl,
+            cluster: member.cluster,
+            domainName: member.scope?.domainName || '',
+            servers: [...(member.aliasOf?.values() ?? [])],
+            error: member.lastError || null,
+          })),
+        }
+      : {}),
   }
 }
 
@@ -312,6 +364,136 @@ function callAdminServer(connection, { method, path: restPath, body, headers = {
     if (body?.length) req.write(body)
     req.end()
   })
+}
+
+// ------------------------------------------------------------- groups
+
+/** How long a member's idea of what its cluster holds is trusted. */
+const SCOPE_MAX_AGE_MS = 60_000
+
+/** Reads what belongs to a member's cluster. Throws when it cannot be read. */
+async function loadScope(member) {
+  const res = await callAdminServer(member, {
+    method: 'POST',
+    path: REST_BASE + '/domainConfig/search',
+    body: Buffer.from(SCOPE_PAYLOAD),
+    headers: { 'Content-Type': 'application/json' },
+    timeoutMs: 20_000,
+  })
+  if (res.status >= 400) {
+    throw Object.assign(new Error(`The AdminServer answered ${res.status} to the cluster lookup.`), {
+      status: res.status,
+    })
+  }
+  return buildScope(JSON.parse(res.body.toString('utf8')), member.cluster)
+}
+
+/**
+ * An application deployed to the cluster after connecting has to be found by
+ * the routing, so the scope is read again once it is a minute old. A member
+ * that cannot answer keeps what it had.
+ */
+async function refreshScopes(connection) {
+  if (Date.now() - connection.scopedAt < SCOPE_MAX_AGE_MS) return
+  if (!connection.scopeRefresh) {
+    connection.scopeRefresh = Promise.all(
+      connection.members.map(async (member) => {
+        try {
+          const scope = await loadScope(member)
+          if (scope.found) member.scope = scope
+        } catch {
+          // Reported by the request that follows, which will fail the same way.
+        }
+      }),
+    ).finally(() => {
+      assignAliases(connection.members)
+      connection.scopedAt = Date.now()
+      connection.scopeRefresh = null
+    })
+  }
+  await connection.scopeRefresh
+}
+
+const jsonResponse = (status, payload) => ({
+  status,
+  contentType: 'application/json',
+  body: Buffer.from(JSON.stringify(payload)),
+})
+
+/**
+ * One request against a group: sent to the members it concerns, each answer
+ * cut down to that member's cluster, and the answers merged into one.
+ */
+async function callGroup(connection, { method, path: fullPath, body, headers, timeoutMs }) {
+  const restPath = fullPath.startsWith(REST_BASE) ? fullPath.slice(REST_BASE.length) : fullPath
+
+  // A configuration change would have to take a lock in several domains and
+  // activate in all of them or none. Until that exists, a group only reads the
+  // configuration and drives the runtime.
+  if (restPath.startsWith('/edit') && method !== 'GET' && method !== 'HEAD') {
+    return jsonResponse(403, {
+      status: 403,
+      title: 'Not available in multi-environment mode',
+      detail: 'Configuration changes and deployments are made on one domain at a time. Connect to that domain in single-environment mode.',
+    })
+  }
+
+  await refreshScopes(connection)
+
+  let routes = routeRequest(connection.members, restPath)
+  if (method !== 'GET' && method !== 'HEAD') routes = routeByBody(routes, body)
+  if (!routes.length) {
+    return jsonResponse(404, {
+      status: 404,
+      title: 'Not found in this environment',
+      detail: 'None of the clusters in this group has it.',
+    })
+  }
+
+  const results = await Promise.all(
+    routes.map(({ member, path: memberPath }) =>
+      callAdminServer(member, {
+        method,
+        path: REST_BASE + memberPath,
+        body: rewriteBody(member, body),
+        headers,
+        timeoutMs,
+      })
+        .then((res) => {
+          member.lastError = res.status >= 500 ? `HTTP ${res.status}` : null
+          return { ...res, member, path: memberPath }
+        })
+        .catch((error) => {
+          member.lastError = error.message
+          return { member, path: memberPath, error }
+        }),
+    ),
+  )
+
+  const combined = combineResults(results, { method, restPath })
+  const partial = combined.failed.map((r) => `${r.member.label}: ${r.error?.message || `HTTP ${r.status}`}`)
+
+  if (combined.failure) {
+    const { failure } = combined
+    if (failure.error) {
+      throw Object.assign(new Error(`${failure.member.label} — ${failure.error.message}`), {
+        status: failure.error.status || 502,
+      })
+    }
+    return { status: failure.status, contentType: failure.contentType, body: failure.body, partial }
+  }
+  if (combined.passthrough) return { ...combined.passthrough, partial }
+  return {
+    status: combined.status,
+    contentType: 'application/json',
+    body: combined.payload === null ? Buffer.alloc(0) : Buffer.from(JSON.stringify(combined.payload)),
+    partial,
+  }
+}
+
+/** The one call every caller uses: a single AdminServer, or a group of them. */
+function callUpstream(connection, options) {
+  return connection.kind === 'group' ? callGroup(connection, options) : callAdminServer(connection, options)
 }
 
 function normalizeUpstreamError(err) {
@@ -645,7 +827,7 @@ async function persistSample(connection, sample) {
 
 async function sampleConnection(connection) {
   try {
-    const upstream = await callAdminServer(connection, {
+    const upstream = await callUpstream(connection, {
       method: 'POST',
       path: REST_BASE + '/domainRuntime/search',
       body: Buffer.from(SAMPLE_PAYLOAD),
@@ -661,7 +843,9 @@ async function sampleConnection(connection) {
     if (connection.history.length > MAX_SAMPLES) {
       connection.history.splice(0, connection.history.length - MAX_SAMPLES)
     }
-    connection.historyError = null
+    // A group keeps sampling the members that answer; the ones that did not are
+    // named, so a server missing from the charts is not mistaken for a stopped one.
+    connection.historyError = upstream.partial?.length ? `No answer from ${upstream.partial.join('; ')}` : null
     await persistSample(connection, sample)
   } catch (err) {
     // A domain that is down must not write one console line per interval; the
@@ -927,6 +1111,7 @@ function sanitiseHost(value) {
 
 async function handleCreateConnection(req, res) {
   const payload = await readJson(req)
+  if (Array.isArray(payload.members)) return handleCreateGroup(req, res, payload)
   const host = sanitiseHost(payload.host)
   const port = Number(payload.port)
   const ssl = Boolean(payload.ssl)
@@ -961,52 +1146,9 @@ async function handleCreateConnection(req, res) {
   }
   connection.historyFile = historyFileFor(connection)
 
-  let upstream
-  try {
-    upstream = await callAdminServer(connection, {
-      method: 'GET',
-      path:
-        REST_BASE +
-        '/domainConfig?links=none&fields=name,configurationVersion,productionModeEnabled,rootDirectory,adminServerName',
-      timeoutMs: 20_000,
-    })
-  } catch (err) {
-    return sendError(res, err.status || 502, 'Cannot reach the AdminServer', err.message)
-  }
-
-  if (upstream.status === 401) {
-    return sendError(res, 401, 'Invalid username or password', 'The AdminServer rejected these credentials.')
-  }
-  if (upstream.status === 403) {
-    return sendError(res, 403, 'Access denied', 'This user cannot read the domain configuration.')
-  }
-  if (upstream.status === 404) {
-    return sendError(
-      res,
-      404,
-      'REST management API not found',
-      'The port answered but /management is missing. Check that this is the AdminServer port and that RESTful Management Services are enabled.',
-    )
-  }
-  if (upstream.status >= 400) {
-    return sendError(
-      res,
-      upstream.status,
-      'The AdminServer refused the connection check',
-      upstream.body.toString('utf8').slice(0, 400),
-    )
-  }
-
-  try {
-    connection.domain = JSON.parse(upstream.body.toString('utf8'))
-  } catch {
-    return sendError(
-      res,
-      502,
-      'Unexpected response',
-      'The endpoint did not return JSON. Check that the host and port belong to a WebLogic AdminServer.',
-    )
-  }
+  const checked = await checkAdminServer(connection)
+  if (checked.error) return sendError(res, checked.error.status, checked.error.title, checked.error.detail)
+  connection.domain = checked.domain
 
   connection.permissions = await probePermissions(connection)
 
@@ -1016,6 +1158,186 @@ async function handleCreateConnection(req, res) {
   connection.name = connection.name || saved?.name || connection.domain?.name || `${host}:${port}`
   if (save) connection.profileId = upsertProfile(connection).id
 
+  await attachConnection(req, res, connection)
+}
+
+/**
+ * The cheapest authenticated call there is, and the one that tells a wrong
+ * port from a wrong password. Returns the domain, or an error worded for the
+ * operator.
+ */
+async function checkAdminServer(target) {
+  let upstream
+  try {
+    upstream = await callAdminServer(target, {
+      method: 'GET',
+      path:
+        REST_BASE +
+        '/domainConfig?links=none&fields=name,configurationVersion,productionModeEnabled,rootDirectory,adminServerName',
+      timeoutMs: 20_000,
+    })
+  } catch (err) {
+    return { error: { status: err.status || 502, title: 'Cannot reach the AdminServer', detail: err.message } }
+  }
+
+  if (upstream.status === 401) {
+    return {
+      error: { status: 401, title: 'Invalid username or password', detail: 'The AdminServer rejected these credentials.' },
+    }
+  }
+  if (upstream.status === 403) {
+    return { error: { status: 403, title: 'Access denied', detail: 'This user cannot read the domain configuration.' } }
+  }
+  if (upstream.status === 404) {
+    return {
+      error: {
+        status: 404,
+        title: 'REST management API not found',
+        detail:
+          'The port answered but /management is missing. Check that this is the AdminServer port and that RESTful Management Services are enabled.',
+      },
+    }
+  }
+  if (upstream.status >= 400) {
+    return {
+      error: {
+        status: upstream.status,
+        title: 'The AdminServer refused the connection check',
+        detail: upstream.body.toString('utf8').slice(0, 400),
+      },
+    }
+  }
+
+  try {
+    return { domain: JSON.parse(upstream.body.toString('utf8')) }
+  } catch {
+    return {
+      error: {
+        status: 502,
+        title: 'Unexpected response',
+        detail: 'The endpoint did not return JSON. Check that the host and port belong to a WebLogic AdminServer.',
+      },
+    }
+  }
+}
+
+/**
+ * Several AdminServers, each narrowed to one cluster, opened as one connection.
+ *
+ * Every member is checked before anything is kept: a group with one wrong
+ * cluster name would otherwise open and quietly show less than it should.
+ */
+async function handleCreateGroup(req, res, payload) {
+  const username = String(payload.username || '')
+  const password = String(payload.password || '')
+  const save = payload.save !== false
+  if (!username) return sendError(res, 400, 'Username is required')
+
+  const auth = 'Basic ' + Buffer.from(`${username}:${password}`, 'utf8').toString('base64')
+  const members = []
+  for (const [index, raw] of payload.members.entries()) {
+    const host = sanitiseHost(raw?.host)
+    const port = Number(raw?.port)
+    const cluster = String(raw?.cluster || '').trim()
+    const where = `Environment ${index + 1}`
+    if (!host || /[\s\\]/.test(host)) {
+      return sendError(res, 400, 'Invalid host', `${where}: enter a hostname or IP address, for example 10.0.0.12.`)
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return sendError(res, 400, 'Port must be between 1 and 65535', where)
+    }
+    if (!cluster) return sendError(res, 400, 'Cluster is required', `${where}: enter the cluster name.`)
+    const ssl = Boolean(raw?.ssl)
+    const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+    members.push({
+      host,
+      port,
+      ssl,
+      insecure: Boolean(raw?.insecure),
+      cluster,
+      username,
+      auth,
+      baseUrl: `${ssl ? 'https' : 'http'}://${bracketed}:${port}`,
+      label: `${host}:${port}`,
+    })
+  }
+  if (!members.length) return sendError(res, 400, 'Add at least one environment')
+  const seen = new Set()
+  for (const member of members) {
+    if (seen.has(memberKey(member))) {
+      return sendError(res, 400, 'The same cluster is listed twice', `${member.host}:${member.port} · ${member.cluster}`)
+    }
+    seen.add(memberKey(member))
+  }
+
+  const checks = await Promise.all(
+    members.map(async (member) => {
+      const checked = await checkAdminServer(member)
+      if (checked.error) return checked.error
+      try {
+        member.scope = await loadScope(member)
+      } catch (err) {
+        return { status: err.status || 502, title: 'Could not read the clusters', detail: err.message }
+      }
+      if (!member.scope.found) {
+        const known = member.scope.clusters.length ? member.scope.clusters.join(', ') : 'none'
+        return {
+          status: 404,
+          title: 'Cluster not found',
+          detail: `There is no cluster "${member.cluster}" in domain ${member.scope.domainName || ''}. Clusters there: ${known}.`,
+        }
+      }
+      member.domain = checked.domain
+      return null
+    }),
+  )
+  const failedAt = checks.findIndex(Boolean)
+  if (failedAt >= 0) {
+    const error = checks[failedAt]
+    const member = members[failedAt]
+    return sendError(res, error.status, error.title, `${member.host}:${member.port} — ${error.detail}`)
+  }
+
+  assignLabels(members)
+  assignAliases(members)
+
+  const saved = profiles.find((p) => profileKey(p) === profileKey({ kind: 'group', username, members }))
+  const name =
+    String(payload.name || '').trim() || saved?.name || members.map((m) => m.cluster).join(' + ')
+  const first = members[0]
+  const connection = {
+    id: randomUUID(),
+    kind: 'group',
+    name,
+    host: first.host,
+    port: first.port,
+    ssl: first.ssl,
+    insecure: first.insecure,
+    username,
+    baseUrl: `group://${members.map((m) => `${m.host}:${m.port}/${m.cluster}`).join(',')}`,
+    members,
+    scopedAt: Date.now(),
+    domain: {
+      name,
+      productionModeEnabled: members.some((m) => m.domain?.productionModeEnabled),
+      configurationVersion: first.domain?.configurationVersion,
+    },
+    // Configuration changes are refused for a group; saying so up front puts
+    // every settings page into its read-only form instead of a Save that fails.
+    permissions: { configure: false, known: true },
+    connectedAt: Date.now(),
+    history: [],
+    historyError: null,
+  }
+  const digest = createHash('sha1').update(profileKey(connection)).digest('hex').slice(0, 16)
+  connection.historyFile = path.join(HISTORY_DIR, `group-${digest}.ndjson`)
+
+  if (save) connection.profileId = upsertGroupProfile(connection).id
+  await attachConnection(req, res, connection)
+}
+
+/** Makes a checked connection the active one in this browser's session. */
+async function attachConnection(req, res, connection) {
   // Reuse the browser's existing session so adding a second connection keeps
   // the first one live; only mint a cookie when there is no session yet.
   let session = sessionFor(req)
@@ -1130,7 +1452,7 @@ async function handleProxy(req, res, restPath) {
   const body = ['GET', 'HEAD', 'DELETE'].includes(req.method) ? null : await readBody(req, MAX_UPLOAD_BYTES)
   let upstream
   try {
-    upstream = await callAdminServer(connection, {
+    upstream = await callUpstream(connection, {
       method: req.method,
       path: REST_BASE + restPath,
       body,

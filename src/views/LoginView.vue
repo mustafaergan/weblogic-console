@@ -3,7 +3,7 @@ import { computed, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useConnectionStore } from '@/stores/connection'
 import { useReconnect } from '@/composables/useReconnect'
-import { parseTarget } from '@/utils/target'
+import { connectionAddress, parseTarget } from '@/utils/target'
 import ErrorState from '@/components/ErrorState.vue'
 import PasswordPrompt from '@/components/PasswordPrompt.vue'
 import HelpPanel from '@/components/HelpPanel.vue'
@@ -20,7 +20,17 @@ const reconnect = useReconnect(prompt)
 /** Reached from "Add connection…" while other domains are already open. */
 const addingAnother = computed(() => Boolean(route.query.add) && connection.connections.length > 0)
 
-const last = connection.profiles[0]
+const isGroup = (entry) => entry?.kind === 'group'
+
+/**
+ * Single environment: one AdminServer, the whole domain. Multi-environment:
+ * several AdminServers, each narrowed to one cluster, shown together on every
+ * page. The screen opens on whichever kind was used last.
+ */
+const mode = ref(isGroup(connection.profiles[0]) ? 'multi' : 'single')
+
+const last = connection.profiles.find((p) => !isGroup(p))
+const lastGroup = connection.profiles.find(isGroup)
 const form = reactive({
   name: '',
   host: last?.host ?? 'localhost',
@@ -30,6 +40,15 @@ const form = reactive({
   username: last?.username ?? 'weblogic',
   password: '',
   save: true,
+})
+
+const blankMember = () => ({ host: '', port: 7001, ssl: false, insecure: false, cluster: '' })
+const group = reactive({
+  name: '',
+  username: lastGroup?.username ?? last?.username ?? 'weblogic',
+  password: '',
+  save: true,
+  members: [blankMember()],
 })
 
 const error = ref(null)
@@ -42,8 +61,19 @@ const previewUrl = computed(() => {
   return `${form.ssl ? 'https' : 'http'}://${bracketed}:${form.port || '?'}/management/weblogic/latest`
 })
 
+const matchesMode = (entry) => (mode.value === 'multi') === isGroup(entry)
+const openConnections = computed(() => connection.connections.filter(matchesMode))
+const savedProfiles = computed(() => connection.offlineProfiles.filter(matchesMode))
+
 /** Show the form straight away when there is nothing saved to pick from. */
-const formVisible = computed(() => showForm.value || !connection.profiles.length)
+const formVisible = computed(() => showForm.value || !connection.profiles.some(matchesMode))
+
+function setMode(next) {
+  if (mode.value === next) return
+  mode.value = next
+  error.value = null
+  showForm.value = false
+}
 
 function done() {
   router.replace(addingAnother.value ? { name: 'dashboard' } : route.query.redirect || { name: 'dashboard' })
@@ -61,12 +91,38 @@ function normalizeHost() {
   if (parsed.ssl !== undefined) form.ssl = parsed.ssl
 }
 
+/** The same t3:// convenience, for one row of the multi-environment form. */
+function normalizeMemberHost(member) {
+  const parsed = parseTarget(member.host)
+  if (!parsed) return
+  member.host = parsed.host
+  if (parsed.port) member.port = parsed.port
+  if (parsed.ssl !== undefined) member.ssl = parsed.ssl
+}
+
+function addMember() {
+  // A new row starts from the one above: environments of one application are
+  // usually on the same port, with the same SSL setting.
+  const previous = group.members[group.members.length - 1]
+  group.members.push({ ...blankMember(), port: previous?.port ?? 7001, ssl: previous?.ssl ?? false })
+}
+
+function removeMember(index) {
+  if (group.members.length > 1) group.members.splice(index, 1)
+}
+
 async function submit() {
-  normalizeHost()
   error.value = null
   try {
-    await connection.connect(form)
-    form.password = ''
+    if (mode.value === 'multi') {
+      group.members.forEach(normalizeMemberHost)
+      await connection.connect(group)
+      group.password = ''
+    } else {
+      normalizeHost()
+      await connection.connect(form)
+      form.password = ''
+    }
     done()
   } catch (err) {
     error.value = err
@@ -107,11 +163,38 @@ async function switchTo(item) {
         </select>
       </div>
 
+      <div
+        class="mb-3 grid grid-cols-2 gap-1 rounded-lg border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-900"
+        role="tablist"
+        :aria-label="$t('Environment type')"
+      >
+        <button
+          v-for="option in [
+            { value: 'single', label: $t('Single environment'), hint: $t('One AdminServer and its whole domain') },
+            { value: 'multi', label: $t('Multi-environment'), hint: $t('Several domains, narrowed to a cluster in each') },
+          ]"
+          :key="option.value"
+          type="button"
+          role="tab"
+          :aria-selected="mode === option.value"
+          :title="option.hint"
+          class="rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
+          :class="
+            mode === option.value
+              ? 'bg-indigo-600 text-white'
+              : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+          "
+          @click="setMode(option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+
       <!-- Saved and open connections first: the common case is coming back to
            a domain you already work with. -->
-      <div v-if="connection.profiles.length || connection.connections.length" class="card mb-3 divide-y divide-zinc-100 dark:divide-zinc-800">
+      <div v-if="openConnections.length || savedProfiles.length" class="card mb-3 divide-y divide-zinc-100 dark:divide-zinc-800">
         <button
-          v-for="item in connection.connections"
+          v-for="item in openConnections"
           :key="item.id"
           class="flex w-full items-center gap-2.5 p-3 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
           @click="switchTo(item)"
@@ -120,7 +203,7 @@ async function switchTo(item) {
           <span class="min-w-0 flex-1">
             <span class="block truncate text-sm font-medium text-zinc-900 dark:text-zinc-50">{{ item.name }}</span>
             <span class="block truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
-              {{ item.username }}@{{ item.host }}:{{ item.port }}
+              {{ connectionAddress(item) }}
             </span>
           </span>
           <span class="text-xs text-zinc-400 dark:text-zinc-500">
@@ -129,7 +212,7 @@ async function switchTo(item) {
         </button>
 
         <button
-          v-for="profile in connection.offlineProfiles"
+          v-for="profile in savedProfiles"
           :key="profile.id"
           class="flex w-full items-center gap-2.5 p-3 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
           @click="openProfile(profile)"
@@ -138,7 +221,7 @@ async function switchTo(item) {
           <span class="min-w-0 flex-1">
             <span class="block truncate text-sm font-medium text-zinc-700 dark:text-zinc-200">{{ profile.name }}</span>
             <span class="block truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
-              {{ profile.username }}@{{ profile.host }}:{{ profile.port }}<span v-if="profile.ssl"> · SSL</span>
+              {{ connectionAddress(profile) }}<span v-if="profile.ssl"> · SSL</span>
             </span>
           </span>
           <span class="text-xs text-zinc-400 dark:text-zinc-500">{{ $t('connect') }}</span>
@@ -153,7 +236,145 @@ async function switchTo(item) {
         {{ $t('New connection…') }}
       </button>
 
-      <HelpPanel v-if="formVisible" id="login" :title="$t('What to enter here')" default-open>
+      <template v-if="formVisible && mode === 'multi'">
+        <HelpPanel id="login-multi" :title="$t('What to enter here')" default-open>
+          <p>
+            {{
+              $t(
+                'One row per domain: the AdminServer of that domain, and the cluster of it you want to see. Every page then shows the servers of those clusters together, with the applications, data sources and JMS running on them.',
+              )
+            }}
+          </p>
+          <ul class="list-disc space-y-1 pl-4">
+            <li>{{ $t('The username and password are used for every AdminServer in the list.') }}</li>
+            <li>
+              {{
+                $t(
+                  'A server name used in more than one domain is shown as name@domain, so the two can be told apart.',
+                )
+              }}
+            </li>
+            <li>
+              {{
+                $t(
+                  'Starting and stopping servers and applications works as usual. Configuration changes and deployments are made on one domain at a time, in single-environment mode.',
+                )
+              }}
+            </li>
+          </ul>
+        </HelpPanel>
+
+        <form class="card space-y-4 p-5" @submit.prevent="submit">
+          <div>
+            <label class="label-row" for="group-name">
+              {{ $t('Name') }} <span class="font-normal text-zinc-400">{{ $t('(optional)') }}</span>
+            </label>
+            <input
+              id="group-name"
+              v-model="group.name"
+              class="input"
+              :placeholder="$t('Production · all clusters')"
+              autocomplete="off"
+            />
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="label-row" for="group-username">{{ $t('Username') }}</label>
+              <input id="group-username" v-model="group.username" class="input" required autocomplete="username" />
+            </div>
+            <div>
+              <label class="label-row" for="group-password">{{ $t('Password') }}</label>
+              <input
+                id="group-password"
+                v-model="group.password"
+                class="input"
+                type="password"
+                required
+                autocomplete="current-password"
+              />
+            </div>
+          </div>
+
+          <div class="space-y-2">
+            <p class="label-row">{{ $t('Environments') }}</p>
+            <fieldset
+              v-for="(member, index) in group.members"
+              :key="index"
+              class="space-y-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800"
+            >
+              <div class="flex items-center justify-between">
+                <legend class="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                  {{ $t('Environment {number}', { number: index + 1 }) }}
+                </legend>
+                <button
+                  v-if="group.members.length > 1"
+                  type="button"
+                  class="text-xs text-zinc-400 hover:text-red-600 dark:hover:text-red-400"
+                  @click="removeMember(index)"
+                >
+                  {{ $t('Remove') }}
+                </button>
+              </div>
+              <div class="grid grid-cols-3 gap-2">
+                <input
+                  v-model="member.host"
+                  class="input col-span-2"
+                  required
+                  autocomplete="off"
+                  :aria-label="$t('Host or IP')"
+                  :placeholder="$t('10.0.0.12 or t3://10.0.0.12:7001')"
+                  @blur="normalizeMemberHost(member)"
+                  @paste="$nextTick(() => normalizeMemberHost(member))"
+                />
+                <input
+                  v-model.number="member.port"
+                  class="input"
+                  required
+                  type="number"
+                  min="1"
+                  max="65535"
+                  :aria-label="$t('Port')"
+                />
+              </div>
+              <input
+                v-model="member.cluster"
+                class="input"
+                required
+                autocomplete="off"
+                :aria-label="$t('Cluster')"
+                :placeholder="$t('Cluster name, for example Cluster-1')"
+              />
+              <div class="flex flex-wrap gap-x-4 gap-y-1">
+                <label class="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+                  <input v-model="member.ssl" type="checkbox" class="h-3.5 w-3.5 rounded border-zinc-300 text-indigo-600 dark:border-zinc-600 dark:bg-zinc-900" />
+                  {{ $t('Use SSL (https)') }}
+                </label>
+                <label v-if="member.ssl" class="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+                  <input v-model="member.insecure" type="checkbox" class="h-3.5 w-3.5 rounded border-zinc-300 text-indigo-600 dark:border-zinc-600 dark:bg-zinc-900" />
+                  {{ $t('Trust self-signed certificate') }}
+                </label>
+              </div>
+            </fieldset>
+            <button type="button" class="btn btn-ghost w-full" @click="addMember">
+              {{ $t('Add environment') }}
+            </button>
+          </div>
+
+          <label class="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+            <input v-model="group.save" type="checkbox" class="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 dark:border-zinc-600 dark:bg-zinc-900" />
+            {{ $t('Save this connection') }}
+          </label>
+
+          <ErrorState v-if="error" :error="error" @retry="submit" />
+
+          <button class="btn btn-primary w-full py-2" type="submit" :disabled="connection.busy">
+            {{ connection.busy ? $t('Connecting…') : $t('Connect') }}
+          </button>
+        </form>
+      </template>
+
+      <HelpPanel v-if="formVisible && mode === 'single'" id="login" :title="$t('What to enter here')" default-open>
         <p>
           {{
             $t(
@@ -193,7 +414,7 @@ async function switchTo(item) {
         </p>
       </HelpPanel>
 
-      <form v-if="formVisible" class="card space-y-4 p-5" @submit.prevent="submit">
+      <form v-if="formVisible && mode === 'single'" class="card space-y-4 p-5" @submit.prevent="submit">
         <div class="grid grid-cols-3 gap-3">
           <div class="col-span-2">
             <label class="label-row" for="host">

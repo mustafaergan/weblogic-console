@@ -5,6 +5,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { useUiStore } from '@/stores/ui'
 import { useReconnect } from '@/composables/useReconnect'
 import PasswordPrompt from '@/components/PasswordPrompt.vue'
+import { connectionAddress } from '@/utils/target'
 import { t } from '@/i18n'
 
 const connection = useConnectionStore()
@@ -118,7 +119,7 @@ function go(route) {
             <span class="min-w-0 flex-1">
               <span class="block truncate text-sm text-zinc-800 dark:text-zinc-100">{{ item.name }}</span>
               <span class="block truncate text-xs text-zinc-400 dark:text-zinc-500">
-                {{ item.username }}@{{ item.host }}:{{ item.port }}
+                {{ connectionAddress(item) }}
               </span>
             </span>
             <span
@@ -144,7 +145,7 @@ function go(route) {
               <span class="min-w-0 flex-1">
                 <span class="block truncate text-sm text-zinc-600 dark:text-zinc-300">{{ profile.name }}</span>
                 <span class="block truncate text-xs text-zinc-400 dark:text-zinc-500">
-                  {{ profile.username }}@{{ profile.host }}:{{ profile.port }}
+                  {{ connectionAddress(profile) }}
                 </span>
               </span>
             </button>

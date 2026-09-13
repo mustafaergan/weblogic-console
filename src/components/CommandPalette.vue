@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import * as config from '@/api/config'
 import { items } from '@/utils/format'
+import { connectionAddress } from '@/utils/target'
 import { useConnectionStore } from '@/stores/connection'
 import { useUiStore, REFRESH_OPTIONS } from '@/stores/ui'
 import { t } from '@/i18n'
@@ -98,7 +99,10 @@ const commands = computed(() => {
       id: `connection:${entry.id}`,
       group: 'Connection',
       label: t('Switch to {name}', { name: entry.name }),
-      hint: t('{host}:{port} as {user}', { host: entry.host, port: entry.port, user: entry.username }),
+      hint:
+        entry.kind === 'group'
+          ? connectionAddress(entry)
+          : t('{host}:{port} as {user}', { host: entry.host, port: entry.port, user: entry.username }),
       run: () => connection.activate(entry.id),
     }))
 

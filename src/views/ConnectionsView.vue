@@ -5,6 +5,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { useUiStore } from '@/stores/ui'
 import { useReconnect } from '@/composables/useReconnect'
 import { datetime } from '@/utils/format'
+import { connectionAddress } from '@/utils/target'
 import PageHeader from '@/components/PageHeader.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import PasswordPrompt from '@/components/PasswordPrompt.vue'
@@ -236,7 +237,7 @@ async function remove(row) {
             </button>
           </div>
           <p class="truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
-            {{ row.username }}@{{ row.host }}:{{ row.port }}<span v-if="row.ssl"> · SSL</span>
+            {{ connectionAddress(row.profile || row.live) }}<span v-if="row.ssl"> · SSL</span>
           </p>
         </div>
 

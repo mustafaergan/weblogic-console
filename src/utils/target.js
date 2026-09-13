@@ -11,6 +11,20 @@ const SECURE_SCHEMES = new Set(['t3s', 'https', 'iiops', 'ldaps', 'wss'])
 const KNOWN_SCHEMES = new Set([...SECURE_SCHEMES, 't3', 'http', 'iiop', 'ldap', 'ws'])
 
 /**
+ * How a connection or saved profile is written under its name:
+ * `user@host:port` for one AdminServer, and for a multi-environment group every
+ * member with the cluster it is narrowed to.
+ */
+export function connectionAddress(entry) {
+  if (!entry) return ''
+  if (entry.kind === 'group' || Array.isArray(entry.members)) {
+    const members = (entry.members || []).map((m) => `${m.host}:${m.port}/${m.cluster}`)
+    return `${entry.username}@${members.join(', ')}`
+  }
+  return `${entry.username}@${entry.host}:${entry.port}`
+}
+
+/**
  * @returns {{host: string, port?: number, ssl?: boolean} | null}
  *   `port` and `ssl` are only present when the input actually stated them, so
  *   callers can leave their current values alone otherwise.

@@ -1,6 +1,7 @@
 <script setup>
 import { nextTick, ref } from 'vue'
 import ErrorState from '@/components/ErrorState.vue'
+import { connectionAddress } from '@/utils/target'
 
 /**
  * Reconnecting a saved profile needs only the password back — everything else
@@ -73,7 +74,7 @@ defineExpose({ ask })
             {{ $t('Connect to {name}', { name: profile?.name }) }}
           </h2>
           <p class="mt-1 font-mono text-xs text-zinc-500 dark:text-zinc-400">
-            {{ profile?.username }}@{{ profile?.host }}:{{ profile?.port }}
+            {{ connectionAddress(profile) }}
           </p>
 
           <div class="mt-4">

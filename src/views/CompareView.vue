@@ -6,6 +6,7 @@ import { useConnectionStore } from '@/stores/connection'
 import { useUiStore } from '@/stores/ui'
 import { items, targetNames } from '@/utils/format'
 import { download, timestampedName } from '@/utils/export'
+import { connectionAddress } from '@/utils/target'
 import { compareResources, resourceProfile } from '@/utils/resources'
 import PageHeader from '@/components/PageHeader.vue'
 import StatCard from '@/components/StatCard.vue'
@@ -363,7 +364,7 @@ const enoughConnections = computed(() => connection.connections.length > 1)
           </label>
           <select id="compare-left" v-model="left" class="input">
             <option v-for="entry in connection.connections" :key="entry.id" :value="entry.id">
-              {{ entry.name }} — {{ entry.host }}:{{ entry.port }}
+              {{ entry.name }} — {{ entry.kind === 'group' ? connectionAddress(entry) : `${entry.host}:${entry.port}` }}
             </option>
           </select>
         </div>
@@ -375,7 +376,7 @@ const enoughConnections = computed(() => connection.connections.length > 1)
           </label>
           <select id="compare-right" v-model="right" class="input">
             <option v-for="entry in connection.connections" :key="entry.id" :value="entry.id">
-              {{ entry.name }} — {{ entry.host }}:{{ entry.port }}
+              {{ entry.name }} — {{ entry.kind === 'group' ? connectionAddress(entry) : `${entry.host}:${entry.port}` }}
             </option>
           </select>
         </div>

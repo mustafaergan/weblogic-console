@@ -50,8 +50,14 @@ export const useConnectionStore = defineStore('connection', {
     permissionsKnown() {
       return Boolean(this.active?.permissions?.known)
     },
+    /** A multi-environment connection: several domains, each narrowed to one cluster. */
+    isGroup() {
+      return this.active?.kind === 'group'
+    },
     target() {
-      return this.active ? `${this.active.host}:${this.active.port}` : ''
+      if (!this.active) return ''
+      if (this.isGroup) return t('{count} environments', { count: this.active.members?.length || 0 })
+      return `${this.active.host}:${this.active.port}`
     },
     baseUrl() {
       return this.active?.baseUrl || ''
@@ -92,17 +98,33 @@ export const useConnectionStore = defineStore('connection', {
     async connect(form) {
       this.busy = true
       try {
+        const common = {
+          name: form.name?.trim() || '',
+          username: form.username,
+          password: form.password,
+          save: form.save !== false,
+        }
         this.apply(
-          await api.openConnection({
-            name: form.name?.trim() || '',
-            host: form.host.trim(),
-            port: Number(form.port),
-            ssl: Boolean(form.ssl),
-            insecure: Boolean(form.insecure),
-            username: form.username,
-            password: form.password,
-            save: form.save !== false,
-          }),
+          await api.openConnection(
+            form.members
+              ? {
+                  ...common,
+                  members: form.members.map((member) => ({
+                    host: String(member.host || '').trim(),
+                    port: Number(member.port),
+                    ssl: Boolean(member.ssl),
+                    insecure: Boolean(member.insecure),
+                    cluster: String(member.cluster || '').trim(),
+                  })),
+                }
+              : {
+                  ...common,
+                  host: form.host.trim(),
+                  port: Number(form.port),
+                  ssl: Boolean(form.ssl),
+                  insecure: Boolean(form.insecure),
+                },
+          ),
         )
         return this.active
       } finally {

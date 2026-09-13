@@ -74,7 +74,7 @@ const serversTone = computed(() => {
   <div>
     <PageHeader
       :title="$t('Dashboard')"
-      :subtitle="`${connection.domainName} · ${connection.baseUrl}`"
+      :subtitle="`${connection.domainName} · ${connection.isGroup ? connection.target : connection.baseUrl}`"
       :last-updated="lastUpdated"
       :refreshing="refreshing"
       :help="

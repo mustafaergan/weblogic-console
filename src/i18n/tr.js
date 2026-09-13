@@ -658,6 +658,27 @@ export default {
   // ----------------------------------------- login, connections and data sources 
   'Add another AdminServer': 'Başka bir AdminServer ekle',
   'Connect to an AdminServer': "Bir AdminServer'a bağlan",
+  'Environment type': 'Ortam türü',
+  'Single environment': 'Tek ortam',
+  'Multi-environment': 'Çoklu ortam',
+  'One AdminServer and its whole domain': "Tek bir AdminServer ve domain'in tamamı",
+  'Several domains, narrowed to a cluster in each': "Birden çok domain, her birinde seçilen cluster",
+  '{count} environments': '{count} ortam',
+  'Environments': 'Ortamlar',
+  'Environment {number}': 'Ortam {number}',
+  'Add environment': 'Ortam ekle',
+  'Cluster name, for example Cluster-1': 'Cluster adı, örneğin Cluster-1',
+  'Production · all clusters': "Production · tüm cluster'lar",
+  'One row per domain: the AdminServer of that domain, and the cluster of it you want to see. Every page then shows the servers of those clusters together, with the applications, data sources and JMS running on them.':
+    "Her domain için bir satır: o domain'in AdminServer'ı ve görmek istediğiniz cluster. Böylece tüm sayfalar bu cluster'ların server'larını, üzerlerinde çalışan uygulamalar, data source'lar ve JMS ile birlikte tek bir yerde gösterir.",
+  'The username and password are used for every AdminServer in the list.':
+    "Kullanıcı adı ve parola listedeki tüm AdminServer'lar için kullanılır.",
+  'A server name used in more than one domain is shown as name@domain, so the two can be told apart.':
+    "Birden çok domain'de aynı adla bulunan server'lar ayırt edilebilmeleri için ad@domain şeklinde gösterilir.",
+  'Starting and stopping servers and applications works as usual. Configuration changes and deployments are made on one domain at a time, in single-environment mode.':
+    "Server ve uygulamaları başlatıp durdurmak her zamanki gibi çalışır. Yapılandırma değişiklikleri ve deployment'lar ise tek ortam modunda, her seferinde bir domain üzerinde yapılır.",
+  'Every page shows the servers of these clusters together, across their domains. Configuration changes and deployments are made on one domain at a time, in single-environment mode.':
+    "Tüm sayfalar bu cluster'ların server'larını, domain'leri fark etmeksizin birlikte gösterir. Yapılandırma değişiklikleri ve deployment'lar tek ortam modunda, her seferinde bir domain üzerinde yapılır.",
   'active': 'etkin',
   'open': 'açık',
   'connect': 'bağlan',

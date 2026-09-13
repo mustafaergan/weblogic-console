@@ -207,9 +207,21 @@ watch(
           {{ connection.activeLabel }}
         </span>
 
+        <span
+          v-if="connection.isGroup"
+          class="hidden rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700 sm:inline dark:bg-indigo-500/15 dark:text-indigo-300"
+          :title="
+            $t(
+              'Every page shows the servers of these clusters together, across their domains. Configuration changes and deployments are made on one domain at a time, in single-environment mode.',
+            )
+          "
+        >
+          {{ $t('Multi-environment') }} · {{ connection.target }}
+        </span>
+
         <!-- Stated where it is always visible, not only on a settings page. -->
         <span
-          v-if="!connection.canConfigure"
+          v-else-if="!connection.canConfigure"
           class="hidden rounded-full bg-zinc-200 px-2 py-0.5 text-xs font-medium text-zinc-700 sm:inline dark:bg-zinc-700 dark:text-zinc-200"
           :title="
             $t(
