@@ -498,17 +498,15 @@ export const useAlertsStore = defineStore('alerts', {
       setTitleBadge(this.unread)
       this.persist()
 
-      const ui = useUiStore()
-      if (severity === 'error') ui.error(title, detail)
-      else if (severity === 'warn') ui.notify({ tone: 'error', title, detail, timeout: 12000 })
-      else ui.info(title, detail)
-
+      // No toast: a rule that keeps firing turned the corner of every page into
+      // a stack of popups. The bell's count and the tab title say something was
+      // raised, and the panel holds the alert itself.
       if (this.desktop && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         try {
           new Notification(title, { body: detail, tag: key })
         } catch {
           // Some browsers refuse to construct notifications outside a service
-          // worker; the in-console toast has already been shown either way.
+          // worker; the bell has already counted it either way.
         }
       }
 
