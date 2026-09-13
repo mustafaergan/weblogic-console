@@ -15,6 +15,7 @@ deployed to the AdminServer, and no agent runs anywhere near your servers.
 - [Why this exists](#why-this-exists)
 - [Quick start](#quick-start)
 - [Multiple domains](#multiple-domains)
+- [Multi-environment mode](#multi-environment-mode)
 - [Language](#language)
 - [Configuration](#configuration)
 - [How it works](#how-it-works)
@@ -53,7 +54,15 @@ npm install
 npm run serve
 ```
 
-Open <http://127.0.0.1:7101>, enter your AdminServer details, and connect:
+Open <http://127.0.0.1:7101>. The connect screen asks for one of two modes:
+
+- **Single environment** — one AdminServer and its whole domain. This is the
+  classic flow described below.
+- **Multi-environment** — several AdminServers, each narrowed to one cluster,
+  shown together on every page. See
+  [Multi-environment mode](#multi-environment-mode).
+
+For a single environment, enter your AdminServer details and connect:
 
 | Field    | Example     | Notes                                              |
 | -------- | ----------- | -------------------------------------------------- |
@@ -119,6 +128,59 @@ new domain rather than leaving stale numbers on screen.
 
 Untick **Save this connection** on the connect screen for a one-off session that
 leaves nothing behind.
+
+## Multi-environment mode
+
+One application often runs on a cluster in each of several domains — one
+domain per data centre, per machine, or per line of business. Multi-environment
+mode shows those clusters as if they were one domain.
+
+On the connect screen choose **Multi-environment** and add one row per domain:
+
+| Field    | Example           | Notes                                                        |
+| -------- | ----------------- | ------------------------------------------------------------ |
+| Host/IP  | `10.0.0.12`       | The AdminServer of that domain — a `t3://` URL can be pasted |
+| Port     | `7001`            | Its admin listen port                                        |
+| Cluster  | `AppCluster`      | The cluster of that domain you want to see                   |
+| SSL      | off               | Per row, with "trust self-signed" when needed                 |
+
+One username and password is used for every AdminServer in the list. The group
+can be given a name and is saved as a profile like any other connection —
+hosts, ports, clusters and username, never the password.
+
+**What you see.** Every page — Dashboard, Servers, Clusters, Deployments, Data
+Sources, JMS, Transactions, Monitoring, Logs, the alerts and the history —
+shows the members of those clusters together:
+
+- Only the cluster's member servers are included. The AdminServer and servers
+  of other clusters in the same domain are left out.
+- Applications, libraries and data sources are included when they are targeted
+  to the cluster or to one of its members. The same application deployed in two
+  domains is one row, with the targets of both.
+- A server name used in more than one domain is shown as `name@domain` (or
+  `name@host:port` when the domains share a name too), so `ms1` in two domains
+  stays two servers.
+
+**What you can do.** Starting, suspending, resuming and shutting down servers,
+and starting and stopping applications, work as in a single domain. A request
+goes only to the domain that owns the server, or to the domains whose cluster
+has that application — stopping an application never reaches a domain where it
+serves some other cluster.
+
+Configuration changes and deploy, redeploy and undeploy are **not available** in
+this mode: they would have to take the edit lock in several domains and activate
+in all of them or none. Settings pages open read-only and the top bar says
+*Multi-environment*. Make those changes on one domain at a time in single
+environment mode.
+
+**When a domain is down.** Pages keep showing the domains that answer; the
+sampling status in the alerts panel names the ones that did not. At connect,
+every row is checked first — a wrong password, an unreachable host or a cluster
+name that does not exist stops the login with the reason, and a missing cluster
+is reported together with the clusters that domain does have.
+
+What each cluster holds is read at connect and again at most once a minute, so
+an application deployed later is picked up without reconnecting.
 
 ## Language
 
@@ -236,6 +298,13 @@ attached server-side. One browser session can hold several connections at once;
 each request carries an `X-Connection-Id` naming the one it belongs to. Sessions
 expire after 8 hours idle and die with the process.
 
+A multi-environment connection is the same thing one level up. The backend
+holds one upstream target per domain, sends each call to the members it
+concerns, cuts every answer down to that member's cluster, renames colliding
+server names, and merges the answers into the shape a single domain would have
+returned. The browser cannot tell the difference, which is why every page works
+in both modes. See `server/group.mjs`.
+
 The same process serves the built UI in production mode, so `npm run serve` is
 the entire application: one port, one command, no reverse proxy.
 
@@ -338,6 +407,7 @@ fails the edit session is discarded, and the domain is left exactly as it was.
 
 ```
 server/index.mjs            connections, profiles, REST proxy, runtime sampler, static serving
+server/group.mjs            multi-environment: routing, cluster filtering, merging answers
 scripts/dev.mjs             runs backend + Vite together
 scripts/i18n-check.mjs      which strings are still missing a translation
 src/
@@ -411,6 +481,9 @@ where you were already looking at it.
 Across every page:
 
 - **Several domains open at once**, with instant switching from the sidebar.
+- **Several clusters as one.** Multi-environment mode puts a cluster from each of
+  several domains on the same pages — see
+  [Multi-environment mode](#multi-environment-mode).
 - **It watches while you are not looking.** The console process samples every
   live connection in the background, so a server leaving RUNNING, a heap past
   90%, a stuck thread or a queue that will not drain raises an alert on
@@ -504,6 +577,9 @@ section before you deploy it anywhere other than your own workstation.
   whatever credentials a live session holds. If you need shared access, put it
   behind HTTPS and an authenticating reverse proxy, and understand that the
   console has no user model of its own.
+- **A multi-environment group uses one set of credentials everywhere.** The
+  password you enter is sent to every AdminServer in the group, so only group
+  domains that share that account.
 - **"Trust self-signed certificate"** disables TLS verification for that
   connection. It is there because internal WebLogic installs routinely use
   self-signed certs; it does mean the upstream connection is not authenticated.
@@ -560,6 +636,9 @@ common ones:
 | *REST management API not found*                  | Something answered, but it is not an AdminServer — or you hit a managed server's port |
 | *Invalid host*                                   | The host field still holds a URL fragment. A `t3://` address is fine; a path or a space is not |
 | *Port 7101 is already in use*                    | Another copy is running. Stop it or use `WLC_PORT`                            |
+| *Cluster not found*                              | Multi-environment: that domain has no cluster by that name. The message lists the ones it has |
+| *Not available in multi-environment mode*        | A configuration change or deployment was attempted on a group. Connect to that domain on its own |
+| *Not found in this environment*                  | None of the group's clusters has that server or application — an AdminServer, or a server of another cluster |
 
 Other things worth knowing:
 
