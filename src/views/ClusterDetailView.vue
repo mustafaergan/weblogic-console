@@ -26,6 +26,8 @@ const name = computed(() => String(route.params.name || ''))
  */
 const alerts = useAlertsStore()
 const watched = computed(() => !alerts.unwatched[name.value])
+/** Members left out of the watch by name, while the cluster itself is in it. */
+const leftOut = computed(() => (watched.value ? members.value.filter((member) => alerts.unwatchedServers[member]) : []))
 
 const { data, refreshing, lastUpdated, reload } = useResource(async ({ signal }) => {
   const [configs, runtimes, snapshot] = await Promise.all([
@@ -160,7 +162,11 @@ const facts = computed(() => [
             <span class="block text-xs text-zinc-500 dark:text-zinc-400">
               {{
                 watched
-                  ? $t('Its members raise alerts like the rest of the domain.')
+                  ? leftOut.length
+                    ? $t('Its members raise alerts like the rest of the domain, except {servers}, left out by name in the alerts panel.', {
+                        servers: leftOut.join(', '),
+                      })
+                    : $t('Its members raise alerts like the rest of the domain.')
                   : $t('Nothing about its members is announced.')
               }}
             </span>

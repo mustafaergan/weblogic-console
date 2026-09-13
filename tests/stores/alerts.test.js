@@ -11,12 +11,13 @@ import * as api from '@/api/client'
 import * as wls from '@/api/weblogic'
 import { DEFAULT_RULES, useAlertsStore } from '@/stores/alerts'
 
-/** The domain the cluster tests run against: two members and a lone server. */
+/** The domain the cluster tests run against: two clusters and a lone server. */
 const TOPOLOGY = {
   items: [
     { name: 'AdminServer' },
     { name: 'ms1', cluster: [{ identity: ['clusters', 'payments'] }] },
     { name: 'ms2', cluster: [{ identity: ['clusters', 'reporting'] }] },
+    { name: 'ms3', cluster: [{ identity: ['clusters', 'payments'] }] },
   ],
 }
 
@@ -379,11 +380,11 @@ describe('the clusters the bell speaks for', () => {
     wls.configuredServers.mockResolvedValue(TOPOLOGY)
     store.setRule('sustainMs', 0)
     await store.readTopology()
-    primed(store, { AdminServer: running(), ms1: running(), ms2: running() })
+    primed(store, { AdminServer: running(), ms1: running(), ms2: running(), ms3: running() })
   })
 
   it('reads which cluster each server is configured into, standalone included', () => {
-    expect(store.membership).toEqual({ AdminServer: '', ms1: 'payments', ms2: 'reporting' })
+    expect(store.membership).toEqual({ AdminServer: '', ms1: 'payments', ms2: 'reporting', ms3: 'payments' })
     expect(store.clusterOf('ms1')).toBe('payments')
   })
 
@@ -431,12 +432,13 @@ describe('the clusters the bell speaks for', () => {
     expect(useAlertsStore().unwatched).toEqual({ reporting: true })
   })
 
-  it('offers every cluster back, listing the standalone servers last', () => {
+  it('offers every cluster back with its members, listing the standalone servers last', () => {
     store.watchCluster('reporting', false)
+    const member = (name, watched = true) => ({ name, watched, known: true })
     expect(store.watchGroups).toEqual([
-      { cluster: 'payments', servers: ['ms1'], watched: true },
-      { cluster: 'reporting', servers: ['ms2'], watched: false },
-      { cluster: '', servers: ['AdminServer'], watched: true },
+      { cluster: 'payments', servers: [member('ms1'), member('ms3')], watched: true, partial: false },
+      { cluster: 'reporting', servers: [member('ms2', false)], watched: false, partial: false },
+      { cluster: '', servers: [member('AdminServer')], watched: true, partial: false },
     ])
     store.watchEverything()
     expect(store.unwatchedClusters).toEqual([])
@@ -447,7 +449,7 @@ describe('the clusters the bell speaks for', () => {
     store.watchCluster('elsewhere', false)
     store.reset()
     expect(store.membership).toEqual({})
-    expect(store.watchGroups).toEqual([{ cluster: 'elsewhere', servers: [], watched: false }])
+    expect(store.watchGroups).toEqual([{ cluster: 'elsewhere', servers: [], watched: false, partial: false }])
   })
 
   it('leaves the domain unfiltered when its configuration cannot be read', async () => {
@@ -458,6 +460,91 @@ describe('the clusters the bell speaks for', () => {
     // And does not ask again on every sample that arrives afterwards.
     store.ingest([sample(T0 + 15_000, { ms1: running() })])
     expect(wls.configuredServers).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('the single servers the bell speaks for', () => {
+  beforeEach(async () => {
+    wls.configuredServers.mockResolvedValue(TOPOLOGY)
+    store.setRule('sustainMs', 0)
+    await store.readTopology()
+    primed(store, { AdminServer: running(), ms1: running(), ms2: running(), ms3: running() })
+  })
+
+  it('says nothing about a server left out by name, while the rest of its cluster is watched', () => {
+    store.watchServer('ms3', false)
+    store.ingest([sample(T0 + 15_000, { ms1: { st: 'SHUTDOWN' }, ms3: { st: 'SHUTDOWN' } })])
+    expect(store.alerts.map((alert) => alert.server)).toEqual(['ms1'])
+    expect(store.unwatchedServer('ms3')).toBe(true)
+    expect(store.unwatchedServer('ms1')).toBe(false)
+  })
+
+  it('shows the cluster as partly watched, and offers the server back on its own line', () => {
+    store.watchServer('ms3', false)
+    const payments = store.watchGroups.find((group) => group.cluster === 'payments')
+    expect(payments).toEqual({
+      cluster: 'payments',
+      servers: [
+        { name: 'ms1', watched: true, known: true },
+        { name: 'ms3', watched: false, known: true },
+      ],
+      watched: true,
+      partial: true,
+    })
+    expect(store.unwatchedServerNames).toEqual(['ms3'])
+    expect(store.unwatchedClusters).toEqual([])
+    expect(store.anyMuted).toBe(true)
+  })
+
+  it('does not list a server twice when its whole cluster is out as well', () => {
+    store.watchServer('ms3', false)
+    store.watchCluster('payments', false)
+    expect(store.unwatchedServerNames).toEqual([])
+    expect(store.unwatchedClusters).toEqual(['payments'])
+    const payments = store.watchGroups.find((group) => group.cluster === 'payments')
+    expect(payments.servers.map((server) => server.watched)).toEqual([false, false])
+    expect(payments.partial).toBe(false)
+  })
+
+  it('ticking a cluster ticks every member again, whatever was unticked by name', () => {
+    store.watchServer('ms3', false)
+    store.watchCluster('payments', false)
+    store.watchCluster('payments', true)
+    expect(store.unwatchedServers).toEqual({})
+    expect(store.unwatchedServer('ms3')).toBe(false)
+  })
+
+  it('ticking one member of an unticked cluster watches that member and leaves the rest out by name', () => {
+    store.watchCluster('payments', false)
+    store.watchServer('ms1', true)
+    expect(store.unwatched).toEqual({})
+    expect(store.unwatchedServers).toEqual({ ms3: true })
+    expect(store.unwatchedServer('ms1')).toBe(false)
+    expect(store.unwatchedServer('ms3')).toBe(true)
+    store.ingest([sample(T0 + 15_000, { ms1: { st: 'SHUTDOWN' }, ms3: { st: 'SHUTDOWN' } })])
+    expect(store.alerts.map((alert) => alert.server)).toEqual(['ms1'])
+  })
+
+  it('can leave out a server the domain does not know, and lists it so it can be taken back', () => {
+    store.watchServer('ms9', false)
+    expect(store.unwatchedServer('ms9')).toBe(true)
+    store.ingest([sample(T0 + 15_000, { ms9: { st: 'SHUTDOWN' } })])
+    expect(store.alerts).toEqual([])
+    const standalone = store.watchGroups.find((group) => group.cluster === '')
+    expect(standalone.servers).toEqual([
+      { name: 'AdminServer', watched: true, known: true },
+      { name: 'ms9', watched: false, known: false },
+    ])
+  })
+
+  it('remembers the choice, and clears it with everything else', () => {
+    store.watchServer('ms3', false)
+    setActivePinia(createPinia())
+    const again = useAlertsStore()
+    expect(again.unwatchedServers).toEqual({ ms3: true })
+    again.watchEverything()
+    expect(again.unwatchedServers).toEqual({})
+    expect(again.anyMuted).toBe(false)
   })
 })
 

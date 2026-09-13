@@ -34,7 +34,9 @@ import { t } from '@/i18n'
  * somebody else's servers is the bell that gets ignored when it is about
  * yours. So the watch itself has a scope: a cluster can be left out of it
  * entirely, which is a snooze that does not expire and is chosen by where a
- * server lives rather than by its name.
+ * server lives rather than by its name — and, for the one member that is
+ * being rebuilt or is always allowed to be odd, a single server can be left
+ * out the same way.
  */
 
 const RULES_KEY = 'wl-console.alerts.rules'
@@ -44,6 +46,7 @@ const FORWARD_KEY = 'wl-console.alerts.forward'
 const ALERTS_KEY = 'wl-console.alerts.log'
 const SNOOZE_KEY = 'wl-console.alerts.snoozed'
 const CLUSTERS_KEY = 'wl-console.alerts.unwatched'
+const SERVERS_KEY = 'wl-console.alerts.unwatchedServers'
 const MAX_ALERTS = 200
 /** Alerts older than this are not worth reading back after a reload. */
 const ALERT_TTL_MS = 24 * 60 * 60 * 1000
@@ -164,6 +167,14 @@ export const useAlertsStore = defineStore('alerts', {
      */
     unwatched: readJson(CLUSTERS_KEY, {}),
     /**
+     * Single servers left out of the watch, as `{[server]: true}`, on top of
+     * the clusters above. A cluster is usually the right grain — it is what
+     * somebody else looks after — but a member that is being rebuilt for a
+     * month, or the one canary that is always allowed to be odd, is a server
+     * and not a cluster, and a snooze does not last a month.
+     */
+    unwatchedServers: readJson(SERVERS_KEY, {}),
+    /**
      * server -> the cluster it is configured into, or '' for a server that is
      * in none. Read from the domain's configuration rather than from the
      * samples, because a stopped server has no runtime to ask and "a member of
@@ -217,15 +228,17 @@ export const useAlertsStore = defineStore('alerts', {
     clusterOf: (state) => (server) => state.membership[server],
 
     /**
-     * Whether this server is inside a cluster nobody asked to watch.
+     * Whether this server is out of the watch: left out by name, or inside a
+     * cluster nobody asked to watch.
      *
-     * A server the map does not mention yet is watched. The alternative — no
-     * map, so everything counts as "in no cluster" — would let an operator who
-     * left the standalone group out silence the whole domain for the seconds
-     * between connecting and reading the configuration, including the
-     * AdminServer.
+     * A server the map does not mention yet is watched unless it was left out
+     * by name. The alternative — no map, so everything counts as "in no
+     * cluster" — would let an operator who left the standalone group out
+     * silence the whole domain for the seconds between connecting and reading
+     * the configuration, including the AdminServer.
      */
     unwatchedServer: (state) => (server) => {
+      if (state.unwatchedServers[server]) return true
       const cluster = state.membership[server]
       return cluster === undefined ? false : Boolean(state.unwatched[cluster])
     },
@@ -234,24 +247,51 @@ export const useAlertsStore = defineStore('alerts', {
     unwatchedClusters: (state) => Object.keys(state.unwatched).sort(),
 
     /**
-     * One row per cluster for the panel: its members, and whether it is
-     * watched. A cluster that is only in the ignore list — the domain was
-     * switched, or it was removed — is still listed, or there would be no way
-     * to take it off that list again.
+     * The servers left out by name whose cluster is still watched — the ones
+     * the cluster list does not already account for, so the panel can offer
+     * each of them back on its own line.
+     */
+    unwatchedServerNames: (state) =>
+      Object.keys(state.unwatchedServers)
+        .filter((server) => !state.unwatched[state.membership[server]])
+        .sort(),
+
+    /**
+     * One row per cluster for the panel, each with its members and whether
+     * each of them is watched. `watched` is the cluster's own switch and
+     * `partial` says that some member under a watched cluster has been left
+     * out by name, so a checkbox can show the in-between state. A cluster that
+     * is only in the ignore list — the domain was switched, or it was removed
+     * — is still listed, or there would be no way to take it off that list
+     * again; a server left out by name that the domain does not know is
+     * listed the same way, for the same reason.
      */
     watchGroups: (state) => {
       const groups = new Map()
-      for (const [server, cluster] of Object.entries(state.membership)) {
-        if (!groups.has(cluster)) groups.set(cluster, [])
-        groups.get(cluster).push(server)
+      const place = (cluster, server) => {
+        if (!groups.has(cluster)) groups.set(cluster, new Set())
+        if (server) groups.get(cluster).add(server)
       }
-      for (const cluster of Object.keys(state.unwatched)) if (!groups.has(cluster)) groups.set(cluster, [])
+      for (const [server, cluster] of Object.entries(state.membership)) place(cluster, server)
+      for (const cluster of Object.keys(state.unwatched)) place(cluster)
+      for (const server of Object.keys(state.unwatchedServers)) {
+        if (state.membership[server] === undefined) place('', server)
+      }
       return [...groups.entries()]
-        .map(([cluster, servers]) => ({
-          cluster,
-          servers: servers.sort(),
-          watched: !state.unwatched[cluster],
-        }))
+        .map(([cluster, names]) => {
+          const watched = !state.unwatched[cluster]
+          const servers = [...names].sort().map((name) => ({
+            name,
+            watched: watched && !state.unwatchedServers[name],
+            known: state.membership[name] !== undefined,
+          }))
+          return {
+            cluster,
+            servers,
+            watched,
+            partial: watched && servers.some((server) => !server.watched),
+          }
+        })
         // Servers in no cluster are a group like any other, but they are not a
         // cluster, so they go last rather than first under an empty name.
         .sort((a, b) => {
@@ -262,7 +302,9 @@ export const useAlertsStore = defineStore('alerts', {
 
     /** Anything at all being kept quiet, for the bell to admit to. */
     anyMuted() {
-      return this.anySnoozed || Object.keys(this.unwatched).length > 0
+      return (
+        this.anySnoozed || Object.keys(this.unwatched).length > 0 || Object.keys(this.unwatchedServers).length > 0
+      )
     },
   },
 
@@ -330,12 +372,49 @@ export const useAlertsStore = defineStore('alerts', {
       else all[key] = true
       this.unwatched = all
       writeJson(CLUSTERS_KEY, all)
+      // Ticking a cluster means "watch this cluster", not "watch the members
+      // that were not also unticked one by one some time ago" — that would be
+      // a tick that visibly did nothing for part of the list.
+      if (watched) {
+        const servers = { ...this.unwatchedServers }
+        for (const server of Object.keys(servers)) if (this.membership[server] === key) delete servers[server]
+        this.unwatchedServers = servers
+        writeJson(SERVERS_KEY, servers)
+      }
+    },
+
+    /**
+     * Which single servers this bell speaks for, inside the clusters above.
+     *
+     * The same permanence as a cluster: it does not expire, and it counts as
+     * muted on the bell. Ticking a server that sits in an unticked cluster
+     * ticks the cluster too, with the rest of its members left out by name,
+     * because that is the only reading under which the tick did what it said.
+     */
+    watchServer(server, watched) {
+      const all = { ...this.unwatchedServers }
+      if (watched) delete all[server]
+      else all[server] = true
+      const cluster = this.membership[server]
+      if (watched && cluster !== undefined && this.unwatched[cluster]) {
+        for (const [member, own] of Object.entries(this.membership)) {
+          if (own === cluster && member !== server) all[member] = true
+        }
+        const clusters = { ...this.unwatched }
+        delete clusters[cluster]
+        this.unwatched = clusters
+        writeJson(CLUSTERS_KEY, clusters)
+      }
+      this.unwatchedServers = all
+      writeJson(SERVERS_KEY, all)
     },
 
     /** Back to watching the whole domain. */
     watchEverything() {
       this.unwatched = {}
+      this.unwatchedServers = {}
       writeJson(CLUSTERS_KEY, {})
+      writeJson(SERVERS_KEY, {})
     },
 
     /**
@@ -740,8 +819,9 @@ export const useAlertsStore = defineStore('alerts', {
       conditions.clear()
       heapTail.clear()
       lastActivation.clear()
-      // Another domain's servers, and its clusters. The list of clusters left
-      // out is a preference and survives, the way the per-server thresholds do.
+      // Another domain's servers, and its clusters. The lists of clusters and
+      // servers left out are preferences and survive, the way the per-server
+      // thresholds do.
       this.membership = {}
       this.topologyRead = false
       this.primed = false

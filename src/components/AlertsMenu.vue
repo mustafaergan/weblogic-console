@@ -62,6 +62,42 @@ const servers = computed(() => history.serverNames)
 const groups = computed(() => alerts.watchGroups)
 
 /**
+ * The servers the samples have seen that the configuration has not placed —
+ * everything, when the configuration could not be read at all. They are
+ * offered one by one, because the cluster switch has nothing to stand on for
+ * them, and leaving them out by name still works.
+ */
+const unplaced = computed(() => {
+  const placed = new Set(groups.value.flatMap((group) => group.servers.map((server) => server.name)))
+  return servers.value
+    .filter((server) => !placed.has(server))
+    .map((name) => ({ name, watched: !alerts.unwatchedServers[name] }))
+})
+
+/** The last state a server was seen in, for the dot beside its name. */
+const stateOf = (server) => history.latest?.servers?.[server]?.st || ''
+
+const STATE_DOT = {
+  RUNNING: 'bg-emerald-500',
+  FAILED: 'bg-red-500',
+  FAILED_NOT_RESTARTABLE: 'bg-red-500',
+  '': 'bg-zinc-300 dark:bg-zinc-600',
+}
+const stateDot = (server) => {
+  const state = stateOf(server)
+  return STATE_DOT[state] || (state === 'SHUTDOWN' || state === 'UNKNOWN' ? 'bg-zinc-400' : 'bg-amber-500')
+}
+
+/** What the row for a cluster says beside its name. */
+function groupSummary(group) {
+  const total = group.servers.length
+  if (!total) return t('not in this domain')
+  if (!group.watched) return t('none of {total} watched', { total })
+  const watched = group.servers.filter((server) => server.watched).length
+  return watched === total ? t('{total} watched', { total }) : t('{watched} of {total} watched', { watched, total })
+}
+
+/**
  * The cluster list is read from the domain's configuration, so it is asked for
  * again whenever the thresholds are opened: a cluster added this morning should
  * be on offer this morning.
@@ -351,49 +387,124 @@ function snooze(server, raw) {
         <div class="space-y-2 border-t border-zinc-200 pt-3 dark:border-zinc-800">
           <div class="flex items-center justify-between gap-2">
             <span class="flex items-center gap-1 text-zinc-700 dark:text-zinc-200">
-              {{ $t('Clusters to watch') }}
+              {{ $t('Clusters and servers to watch') }}
               <InfoTip
-                :heading="$t('Clusters to watch')"
+                :heading="$t('Clusters and servers to watch')"
                 :text="
                   $t(
-                    'Which part of the domain this bell speaks for. An unticked cluster raises nothing at all — no alert, no toast, no notification — for any of its servers, until it is ticked again. Unlike a snooze it does not expire, so it is the setting for a cluster that somebody else looks after rather than for one that is being worked on right now.',
+                    'Which part of the domain this bell speaks for. An unticked cluster raises nothing at all — no alert, no toast, no notification — for any of its servers, and an unticked server raises nothing about that one server while the rest of its cluster is still watched. Neither expires, unlike a snooze, so this is the setting for a cluster that somebody else looks after or a server that is being rebuilt, rather than for one that is being worked on right now. Ticking a cluster ticks all of its members again.',
                   )
                 "
               />
             </span>
             <button
-              v-if="alerts.unwatchedClusters.length"
+              v-if="alerts.unwatchedClusters.length || alerts.unwatchedServerNames.length"
               class="shrink-0 text-xs text-indigo-600 hover:underline dark:text-indigo-400"
-              :title="$t('Watch every cluster in this domain again')"
+              :title="$t('Watch every cluster and server in this domain again')"
               @click="alerts.watchEverything()"
             >
               {{ $t('Watch all') }}
             </button>
           </div>
 
-          <ul v-if="groups.length" class="space-y-1">
-            <li v-for="group in groups" :key="group.cluster" class="flex items-center justify-between gap-2 text-xs">
-              <span class="min-w-0">
-                <span class="text-zinc-600 dark:text-zinc-300">{{ groupLabel(group.cluster) }}</span>
-                <span v-if="group.servers.length" class="ml-1 text-zinc-400 dark:text-zinc-500">
-                  {{ group.servers.join(', ') }}
+          <ul v-if="groups.length" class="space-y-2">
+            <li v-for="group in groups" :key="group.cluster" class="text-xs">
+              <label class="flex items-center justify-between gap-2">
+                <span class="flex min-w-0 items-baseline gap-1.5">
+                  <span class="truncate font-medium text-zinc-600 dark:text-zinc-300">
+                    {{ groupLabel(group.cluster) }}
+                  </span>
+                  <span class="shrink-0 text-[11px] text-zinc-400 dark:text-zinc-500">{{ groupSummary(group) }}</span>
                 </span>
-                <span v-else class="ml-1 text-zinc-400 dark:text-zinc-500">
-                  {{ $t('not in this domain') }}
-                </span>
-              </span>
-              <input
-                type="checkbox"
-                class="shrink-0"
-                :checked="group.watched"
-                :aria-label="$t('Watch {cluster}', { cluster: groupLabel(group.cluster) })"
-                @change="alerts.watchCluster(group.cluster, $event.target.checked)"
-              />
+                <input
+                  type="checkbox"
+                  class="shrink-0"
+                  :checked="group.watched"
+                  :indeterminate="group.partial"
+                  :aria-label="$t('Watch {cluster}', { cluster: groupLabel(group.cluster) })"
+                  @change="alerts.watchCluster(group.cluster, $event.target.checked)"
+                />
+              </label>
+              <!-- The members, each with a switch of its own: the one server
+                   that is being rebuilt should not cost the rest of its cluster
+                   their alerts. -->
+              <ul
+                v-if="group.servers.length"
+                class="ml-1.5 mt-1 space-y-1 border-l border-zinc-200 pl-2.5 dark:border-zinc-700"
+              >
+                <li v-for="server in group.servers" :key="server.name" class="flex items-center justify-between gap-2">
+                  <span class="flex min-w-0 items-center gap-1.5">
+                    <span
+                      :class="['h-1.5 w-1.5 shrink-0 rounded-full', stateDot(server.name)]"
+                      :title="stateOf(server.name) || $t('No sample yet')"
+                    />
+                    <span
+                      :class="[
+                        'truncate',
+                        server.watched
+                          ? 'text-zinc-600 dark:text-zinc-300'
+                          : 'text-zinc-400 line-through dark:text-zinc-500',
+                      ]"
+                    >
+                      {{ server.name }}
+                    </span>
+                    <span v-if="!server.known" class="shrink-0 text-[11px] text-zinc-400 dark:text-zinc-500">
+                      {{ $t('not in this domain') }}
+                    </span>
+                    <span
+                      v-else-if="alerts.snoozedUntil(server.name)"
+                      class="shrink-0 text-[11px] text-zinc-400 dark:text-zinc-500"
+                    >
+                      {{ $t('snoozed until {time}', { time: time(alerts.snoozedUntil(server.name)) }) }}
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    class="shrink-0"
+                    :checked="server.watched"
+                    :aria-label="$t('Watch {server}', { server: server.name })"
+                    @change="alerts.watchServer(server.name, $event.target.checked)"
+                  />
+                </li>
+              </ul>
             </li>
           </ul>
-          <p v-else class="text-[11px] text-zinc-400 dark:text-zinc-500">
+          <p v-else-if="!unplaced.length" class="text-[11px] text-zinc-400 dark:text-zinc-500">
             {{ $t('The clusters in this domain appear here once its configuration has been read.') }}
           </p>
+
+          <!-- Servers the configuration has not placed: still each its own switch. -->
+          <div v-if="unplaced.length" class="text-xs">
+            <p class="font-medium text-zinc-600 dark:text-zinc-300">{{ $t('Other servers') }}</p>
+            <p class="text-[11px] text-zinc-400 dark:text-zinc-500">
+              {{ $t('Seen in the samples but not placed in a cluster, because the domain configuration could not be read.') }}
+            </p>
+            <ul class="ml-1.5 mt-1 space-y-1 border-l border-zinc-200 pl-2.5 dark:border-zinc-700">
+              <li v-for="server in unplaced" :key="server.name" class="flex items-center justify-between gap-2">
+                <span class="flex min-w-0 items-center gap-1.5">
+                  <span
+                    :class="['h-1.5 w-1.5 shrink-0 rounded-full', stateDot(server.name)]"
+                    :title="stateOf(server.name) || $t('No sample yet')"
+                  />
+                  <span
+                    :class="[
+                      'truncate',
+                      server.watched ? 'text-zinc-600 dark:text-zinc-300' : 'text-zinc-400 line-through dark:text-zinc-500',
+                    ]"
+                  >
+                    {{ server.name }}
+                  </span>
+                </span>
+                <input
+                  type="checkbox"
+                  class="shrink-0"
+                  :checked="server.watched"
+                  :aria-label="$t('Watch {server}', { server: server.name })"
+                  @change="alerts.watchServer(server.name, $event.target.checked)"
+                />
+              </li>
+            </ul>
+          </div>
         </div>
 
         <!-- One threshold rarely fits an AdminServer and a managed server both. -->
@@ -512,7 +623,7 @@ function snooze(server, raw) {
       </div>
 
       <div
-        v-if="snoozedServers.length || alerts.unwatchedClusters.length"
+        v-if="snoozedServers.length || alerts.unwatchedClusters.length || alerts.unwatchedServerNames.length"
         class="border-b border-zinc-200 px-3 py-2 text-xs dark:border-zinc-800"
       >
         <p class="mb-1 text-zinc-500 dark:text-zinc-400">{{ $t('Not being watched') }}</p>
@@ -529,6 +640,22 @@ function snooze(server, raw) {
             <button
               class="shrink-0 text-indigo-600 hover:underline dark:text-indigo-400"
               @click="alerts.watchCluster(cluster, true)"
+            >
+              {{ $t('Watch') }}
+            </button>
+          </li>
+          <li
+            v-for="server in alerts.unwatchedServerNames"
+            :key="`server:${server}`"
+            class="flex items-center justify-between gap-2"
+          >
+            <span class="truncate text-zinc-600 dark:text-zinc-300">
+              {{ server }}
+              <span class="text-zinc-400 dark:text-zinc-500">{{ $t('until you turn it back on') }}</span>
+            </span>
+            <button
+              class="shrink-0 text-indigo-600 hover:underline dark:text-indigo-400"
+              @click="alerts.watchServer(server, true)"
             >
               {{ $t('Watch') }}
             </button>

@@ -2174,14 +2174,33 @@ export default {
   'Its members raise alerts like the rest of the domain.':
     "Üyeleri, domain'in geri kalanı gibi uyarı üretir.",
   'Nothing about its members is announced.': 'Üyeleriyle ilgili hiçbir şey bildirilmez.',
-  'Clusters to watch': "İzlenecek cluster'lar",
-  'Which part of the domain this bell speaks for. An unticked cluster raises nothing at all — no alert, no toast, no notification — for any of its servers, until it is ticked again. Unlike a snooze it does not expire, so it is the setting for a cluster that somebody else looks after rather than for one that is being worked on right now.':
-    "Bu zilin domain'in hangi bölümü adına konuştuğu. İşareti kaldırılan bir cluster, yeniden işaretlenene kadar hiçbir server'ı için hiçbir şey üretmez — ne uyarı, ne bildirim, ne masaüstü bildirimi. Ertelemenin aksine süresi dolmaz; yani bu ayar, şu an üzerinde çalışılan bir cluster için değil, bakımı başkasına ait olan bir cluster içindir.",
+  'Clusters and servers to watch': "İzlenecek cluster ve server'lar",
+  'Which part of the domain this bell speaks for. An unticked cluster raises nothing at all — no alert, no toast, no notification — for any of its servers, and an unticked server raises nothing about that one server while the rest of its cluster is still watched. Neither expires, unlike a snooze, so this is the setting for a cluster that somebody else looks after or a server that is being rebuilt, rather than for one that is being worked on right now. Ticking a cluster ticks all of its members again.':
+    "Bu zilin domain'in hangi bölümü adına konuştuğu. İşareti kaldırılan bir cluster hiçbir server'ı için hiçbir şey üretmez — ne uyarı, ne bildirim, ne masaüstü bildirimi; işareti kaldırılan bir server ise cluster'ının geri kalanı izlenmeye devam ederken yalnızca o server hakkında hiçbir şey üretmez. Ertelemenin aksine ikisinin de süresi dolmaz; yani bu ayar, şu an üzerinde çalışılan bir server için değil, bakımı başkasına ait olan bir cluster veya yeniden kurulmakta olan bir server içindir. Bir cluster'ı işaretlemek bütün üyelerini de yeniden işaretler.",
   'Servers in no cluster': "Cluster'a ait olmayan server'lar",
   'not in this domain': "bu domain'de yok",
   'Watch {cluster}': '{cluster} izlensin',
+  'Watch {server}': '{server} izlensin',
   'Watch all': 'Hepsini izle',
-  'Watch every cluster in this domain again': "Bu domain'deki bütün cluster'ları yeniden izler",
+  'Watch every cluster and server in this domain again': "Bu domain'deki bütün cluster ve server'ları yeniden izler",
+  '{total} watched': '{total} üye izleniyor',
+  '{watched} of {total} watched': '{total} üyeden {watched} tanesi izleniyor',
+  'none of {total} watched': '{total} üyeden hiçbiri izlenmiyor',
+  'No sample yet': 'Henüz örnek yok',
+  'snoozed until {time}': '{time} saatine kadar ertelendi',
+  'Other servers': "Diğer server'lar",
+  'Seen in the samples but not placed in a cluster, because the domain configuration could not be read.':
+    "Örneklerde görüldü ama domain konfigürasyonu okunamadığı için bir cluster'a yerleştirilemedi.",
+  'Its members raise alerts like the rest of the domain, except {servers}, left out by name in the alerts panel.':
+    "Üyeleri, domain'in geri kalanı gibi uyarı üretir; uyarı panelinde adıyla izlem dışı bırakılan {servers} hariç.",
+  'Watch this server': "Bu server'ı izle",
+  'Alerts about this server — leaving RUNNING, a heap or queue past its threshold, a stuck thread — are raised only while this is ticked. Untick it for a server that is being rebuilt or is always allowed to be odd: unlike a snooze it does not expire, the rest of its cluster stays watched, and the bell keeps a mark to say part of the domain is out of the watch.':
+    "Bu server'la ilgili uyarılar — RUNNING'den çıkması, eşiği aşan bir heap veya kuyruk, takılmış bir thread — yalnızca bu kutu işaretliyken üretilir. Yeniden kurulmakta olan ya da her zaman farklı davranmasına izin verilen bir server için işareti kaldırın: ertelemenin aksine süresi dolmaz, cluster'ının geri kalanı izlenmeye devam eder ve zil, domain'in bir bölümünün izlem dışında olduğunu belirten bir işaret taşımayı sürdürür.",
+  'Its whole cluster, {cluster}, is out of the watch — tick the cluster on its own page or in the alerts panel first.':
+    "Bütün cluster'ı ({cluster}) izlem dışında — önce cluster'ı kendi sayfasından ya da uyarı panelinden işaretleyin.",
+  'It raises alerts like the rest of the domain.': "Domain'in geri kalanı gibi uyarı üretir.",
+  'Nothing about it is announced until you tick this again.':
+    'Bu kutuyu yeniden işaretleyene kadar onunla ilgili hiçbir şey bildirilmez.',
   'The clusters in this domain appear here once its configuration has been read.':
     "Bu domain'deki cluster'lar, konfigürasyonu okunduğunda burada listelenir.",
   'Not being watched': 'İzlenmeyenler',

@@ -43,6 +43,16 @@ const history = useHistoryStore()
 const alerts = useAlertsStore()
 const activity = useActivityStore()
 
+/**
+ * Whether the alert watcher speaks for this server. The same switch lives in
+ * the alerts panel, but this is where somebody stands when they decide that
+ * this one server is not worth being woken up about for a while yet.
+ */
+const cluster = computed(() => alerts.clusterOf(name.value))
+const watched = computed(() => !alerts.unwatchedServer(name.value))
+/** Out of the watch because its whole cluster is, which is not this page's switch to flip. */
+const clusterUnwatched = computed(() => Boolean(cluster.value) && Boolean(alerts.unwatched[cluster.value]))
+
 const heap = computed(() => history.heapAnalysis(name.value))
 const pool = computed(() => history.poolAnalysis(name.value))
 const jdbc = computed(() => ({
@@ -175,6 +185,38 @@ const facts = computed(() => {
           </span>
         </div>
         <FactList :facts="facts" />
+
+        <label class="mt-4 flex items-start gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+          <input
+            type="checkbox"
+            class="mt-0.5"
+            :checked="watched"
+            :disabled="clusterUnwatched"
+            @change="alerts.watchServer(name, $event.target.checked)"
+          />
+          <span class="text-sm">
+            <span class="flex items-center gap-1 text-zinc-700 dark:text-zinc-200">
+              {{ $t('Watch this server') }}
+              <InfoTip
+                :heading="$t('Watch this server')"
+                :text="
+                  $t(
+                    'Alerts about this server — leaving RUNNING, a heap or queue past its threshold, a stuck thread — are raised only while this is ticked. Untick it for a server that is being rebuilt or is always allowed to be odd: unlike a snooze it does not expire, the rest of its cluster stays watched, and the bell keeps a mark to say part of the domain is out of the watch.',
+                  )
+                "
+              />
+            </span>
+            <span class="block text-xs text-zinc-500 dark:text-zinc-400">
+              {{
+                clusterUnwatched
+                  ? $t('Its whole cluster, {cluster}, is out of the watch — tick the cluster on its own page or in the alerts panel first.', { cluster })
+                  : watched
+                    ? $t('It raises alerts like the rest of the domain.')
+                    : $t('Nothing about it is announced until you tick this again.')
+              }}
+            </span>
+          </span>
+        </label>
       </div>
 
       <div v-if="hasHistory" class="card mb-4 p-4">
